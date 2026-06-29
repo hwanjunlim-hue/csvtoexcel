@@ -27,7 +27,7 @@ jobs:
         shell: bash
         run: |
           echo "변환 대기 페이지 조회 중..."
-          page_ids=$(npx tsx src/scan.ts | grep -E '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
+          page_ids=$(npx tsx src/scan.ts | grep -E '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' || true)
 
           if [ -z "$page_ids" ]; then
             echo "변환 대기 페이지 없음. 종료."
