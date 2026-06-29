@@ -1,17 +1,25 @@
 /**
  * 사용법:
- *   npx tsx src/convert.ts <CSV파일경로> [출력경로.xlsx]
+ *   npx tsx src/convert.ts <Notion-페이지-ID>
  *
- * 예시:
- *   npx tsx src/convert.ts ./data/전표.csv
- *   npx tsx src/convert.ts ./data/전표.csv ./output/재무리포트.xlsx
+ * 필요 환경변수 (.env 또는 shell):
+ *   NOTION_API_TOKEN=ntn_xxxx
+ *
+ * 동작:
+ *   1. 페이지의 'CSV 파일' 속성에서 파일 다운로드
+ *   2. Excel 재무리포트 생성 (네이티브 차트 6종)
+ *   3. 페이지의 '엑셀 파일' 속성에 업로드
  */
 
-import { readFile, writeFile } from "fs/promises";
-import { resolve, basename, dirname } from "path";
 import { createRequire } from "module";
 import ExcelJS from "exceljs";
 import iconv from "iconv-lite";
+import { Client } from "@notionhq/client";
+import dotenv from "dotenv";
+
+dotenv.config();
+
+const XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 
 const require = createRequire(import.meta.url);
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -190,9 +198,32 @@ function writeTable(ws: ExcelJS.Worksheet, r: number, title: string, headers: st
 
 // ─── 메인 변환 함수 ───────────────────────────────────────────────────────────
 
-async function convert(csvPath: string, outputPath: string): Promise<void> {
-	console.log(`[1/4] CSV 로딩: ${csvPath}`);
-	const csvBuf = await readFile(csvPath);
+async function convert(pageId: string): Promise<void> {
+	const token = process.env.NOTION_API_TOKEN;
+	if (!token) throw new Error("NOTION_API_TOKEN이 설정되지 않았습니다. .env 파일을 확인하세요.");
+
+	const notion = new Client({ auth: token });
+
+	// ── 1. Notion 페이지에서 CSV 다운로드 ────────────────────────────────
+	console.log(`[1/5] Notion 페이지 조회: ${pageId}`);
+	const page = await notion.pages.retrieve({ page_id: pageId });
+	const props = (page as { properties: Record<string, unknown> }).properties;
+
+	const csvProp = props["CSV 파일"] as { type: string; files: Array<{ type: string; file?: { url: string }; external?: { url: string } }> } | undefined;
+	if (!csvProp?.files?.length) throw new Error("'CSV 파일' 속성에 첨부 파일이 없습니다.");
+
+	const f = csvProp.files[0];
+	const csvUrl = f.type === "file" ? f.file?.url : f.external?.url;
+	if (!csvUrl) throw new Error("CSV 파일 URL을 가져올 수 없습니다.");
+
+	const titleProp = Object.values(props).find((v: unknown) => (v as { type?: string }).type === "title") as { title: Array<{ plain_text: string }> } | undefined;
+	const pageTitle = titleProp?.title?.map((t) => t.plain_text).join("").trim() || "재무리포트";
+
+	console.log(`      페이지명: ${pageTitle}`);
+	console.log(`[2/5] CSV 다운로드 중...`);
+	const csvResp = await fetch(csvUrl);
+	if (!csvResp.ok) throw new Error(`CSV 다운로드 실패: ${csvResp.status}`);
+	const csvBuf = Buffer.from(await csvResp.arrayBuffer());
 	const rows = parseRows(csvBuf);
 	console.log(`      행 수: ${rows.length}건`);
 
@@ -219,7 +250,7 @@ async function convert(csvPath: string, outputPath: string): Promise<void> {
 	if (revDate.reduce((s, [, v]) => s + v, 0) !== totalRevenue) throw new Error("일자별 매출 합계 불일치");
 
 	// ── 차트 생성 ──────────────────────────────────────────────────────────
-	console.log("[2/4] 차트 생성 중...");
+	console.log("[3/5] 차트 생성 중...");
 	const pnlEntries: [string, number][] = [["총매출", totalRevenue], ["총비용", totalExpense], ["손익", profit]];
 
 	type Def = { type: string; label: string; entries: [string, number][]; post?: (x: string) => string } | null;
@@ -250,7 +281,7 @@ async function convert(csvPath: string, outputPath: string): Promise<void> {
 	if (skipped.length) console.log(`      생략: ${skipped.join(", ")}`);
 
 	// ── 워크북 생성 (ExcelJS) ─────────────────────────────────────────────
-	console.log("[3/4] Excel 워크북 생성 중...");
+	console.log("[4/5] Excel 워크북 생성 중...");
 	const wb = new ExcelJS.Workbook();
 
 	// 원본데이터 시트
@@ -299,28 +330,39 @@ async function convert(csvPath: string, outputPath: string): Promise<void> {
 
 	const finalBuf = Buffer.from(await masterZip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" }));
 
-	// ── 파일 저장 ─────────────────────────────────────────────────────────
-	console.log(`[4/4] 저장 중: ${outputPath}`);
-	await writeFile(outputPath, finalBuf);
+	// ── 5. Notion 업로드 ──────────────────────────────────────────────────
+	const safeTitle = pageTitle.replace(/[^\w가-힣]/g, "_").slice(0, 30);
+	const filename = `${safeTitle}_재무리포트_${month}.xlsx`;
+	console.log(`[5/5] Notion 업로드 중: ${filename}`);
+
+	const upload = await notion.fileUploads.create({ mode: "single_part", filename, content_type: XLSX_MIME });
+	await notion.fileUploads.send({
+		file_upload_id: upload.id,
+		file: { data: new Blob([new Uint8Array(finalBuf)], { type: XLSX_MIME }), filename },
+	});
+	await (notion.pages.update as (args: unknown) => Promise<unknown>)({
+		page_id: pageId,
+		properties: {
+			"엑셀 파일": { files: [{ type: "file_upload", name: filename, file_upload: { id: upload.id } }] },
+		},
+	});
+
 	console.log(`✅ 완료! (${(finalBuf.length / 1024).toFixed(1)} KB)`);
+	console.log(`   파일명: ${filename}`);
 	console.log(`   차트 ${chartXmls.length}종 | 월: ${month} | 손익: ${profit < 0 ? "🔴 적자" : "🟢 흑자"} ${fmt(profit)}원`);
 }
 
 // ─── CLI 진입점 ───────────────────────────────────────────────────────────────
 
-const [, , csvArg, outArg] = process.argv;
+const [, , pageIdArg] = process.argv;
 
-if (!csvArg) {
-	console.error("사용법: npx tsx src/convert.ts <CSV파일> [출력파일.xlsx]");
+if (!pageIdArg) {
+	console.error("사용법: npx tsx src/convert.ts <Notion-페이지-ID>");
+	console.error("예시:   npx tsx src/convert.ts abc123def456...");
 	process.exit(1);
 }
 
-const csvPath = resolve(csvArg);
-const outputPath = outArg
-	? resolve(outArg)
-	: resolve(dirname(csvPath), basename(csvPath, ".csv") + "_재무리포트.xlsx");
-
-convert(csvPath, outputPath).catch((err) => {
+convert(pageIdArg).catch((err) => {
 	console.error("❌ 오류:", err.message);
 	process.exit(1);
 });
