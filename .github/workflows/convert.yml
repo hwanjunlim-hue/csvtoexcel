@@ -1,0 +1,41 @@
+name: CSV → Excel 변환
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+jobs:
+  convert:
+    runs-on: ubuntu-latest
+    env:
+      NOTION_API_TOKEN: ${{ secrets.NOTION_API_TOKEN }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: 의존성 설치
+        run: npm ci
+
+      - name: 변환 대상 조회 및 처리
+        shell: bash
+        run: |
+          echo "변환 대기 페이지 조회 중..."
+          page_ids=$(npx tsx src/scan.ts)
+
+          if [ -z "$page_ids" ]; then
+            echo "변환 대기 페이지 없음. 종료."
+            exit 0
+          fi
+
+          echo "$page_ids" | while IFS= read -r page_id; do
+            [ -z "$page_id" ] && continue
+            echo "▶ 변환 시작: $page_id"
+            npx tsx src/convert.ts "$page_id" \
+              && echo "✅ 완료: $page_id" \
+              || echo "⚠ 실패: $page_id (다음 항목 계속)"
+          done
