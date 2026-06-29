@@ -123,8 +123,30 @@ function addRedBar(xml: string): string {
 }
 
 function sanitize(xml: string): string {
-	// 없는 시트("Table!") 참조 제거 → 캐시 데이터로 렌더링
 	return xml.replace(/<c:f>[^<]*<\/c:f>/g, "");
+}
+
+function escapeXml(s: string): string {
+	return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function addTitle(xml: string, title: string): string {
+	const t = `<c:title><c:tx><c:rich><a:bodyPr/><a:lstStyle/><a:p><a:r><a:t>${escapeXml(title)}</a:t></a:r></a:p></c:rich></c:tx><c:overlay val="0"/></c:title>`;
+	return xml.replace(/<c:title>[\s\S]*?<\/c:title>/, t);
+}
+
+function addDataLabels(xml: string): string {
+	if (xml.includes("<c:pieChart>")) {
+		const d = "<c:dLbls><c:numFmt formatCode=\"#,##0\" sourceLinked=\"0\"/>" +
+			"<c:showLegendKey val=\"0\"/><c:showVal val=\"1\"/><c:showCatName val=\"1\"/>" +
+			"<c:showSerName val=\"0\"/><c:showPercent val=\"1\"/>" +
+			"<c:showBubbleSize val=\"0\"/><c:showLeaderLines val=\"1\"/></c:dLbls>";
+		return xml.replace("</c:pieChart>", `${d}</c:pieChart>`);
+	}
+	const d = "<c:dLbls><c:numFmt formatCode=\"#,##0\" sourceLinked=\"0\"/>" +
+		"<c:showLegendKey val=\"0\"/><c:showVal val=\"1\"/><c:showCatName val=\"0\"/>" +
+		"<c:showSerName val=\"0\"/><c:showPercent val=\"0\"/><c:showBubbleSize val=\"0\"/></c:dLbls>";
+	return xml.replace(/<c:axId/, `${d}<c:axId`);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -250,6 +272,8 @@ async function buildExcel(rows: Row[]): Promise<{ buffer: Buffer; stats: object 
 			const buf = await xChart(def.type, def.label, def.entries);
 			let xml = await chartXmlFrom(buf);
 			xml = sanitize(xml);
+			xml = addTitle(xml, def.label);
+			xml = addDataLabels(xml);
 			if (def.postProcess) xml = def.postProcess(xml);
 			chartXmls.push(xml);
 			created.push(`${def.label} (${def.type})`);
@@ -425,5 +449,36 @@ worker.tool("csvToExcel", {
 			await postComment(notion, pageId, `⚠️ 처리 중 오류 발생:\n${msg}`);
 			throw err;
 		}
+	},
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Webhook: Notion 자동화 → GitHub Actions 트리거
+// ─────────────────────────────────────────────────────────────────────────────
+
+worker.webhook("triggerConvert", {
+	title: "GitHub Actions 변환 트리거",
+	description: "Notion 페이지 상태가 Excel로 바뀔 때 GitHub Actions 변환 워크플로를 실행합니다.",
+	execute: async (_events) => {
+		const pat = process.env.GITHUB_PAT;
+		if (!pat) throw new Error("GITHUB_PAT 환경변수가 설정되지 않았습니다.");
+
+		const resp = await fetch(
+			"https://api.github.com/repos/hwanjunlim-hue/csvtoexcel/dispatches",
+			{
+				method: "POST",
+				headers: {
+					Authorization: `Bearer ${pat}`,
+					Accept: "application/vnd.github+json",
+					"Content-Type": "application/json",
+				},
+				body: JSON.stringify({ event_type: "convert" }),
+			},
+		);
+
+		if (!resp.ok) {
+			throw new Error(`GitHub API 오류: ${resp.status} ${await resp.text()}`);
+		}
+		console.log("[INFO] GitHub Actions 워크플로 트리거 성공");
 	},
 });

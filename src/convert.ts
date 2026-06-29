@@ -131,6 +131,29 @@ function sanitize(xml: string): string {
 	return xml.replace(/<c:f>[^<]*<\/c:f>/g, "");
 }
 
+function escapeXml(s: string): string {
+	return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function addTitle(xml: string, title: string): string {
+	const t = `<c:title><c:tx><c:rich><a:bodyPr/><a:lstStyle/><a:p><a:r><a:t>${escapeXml(title)}</a:t></a:r></a:p></c:rich></c:tx><c:overlay val="0"/></c:title>`;
+	return xml.replace(/<c:title>[\s\S]*?<\/c:title>/, t);
+}
+
+function addDataLabels(xml: string): string {
+	if (xml.includes("<c:pieChart>")) {
+		const d = "<c:dLbls><c:numFmt formatCode=\"#,##0\" sourceLinked=\"0\"/>" +
+			"<c:showLegendKey val=\"0\"/><c:showVal val=\"1\"/><c:showCatName val=\"1\"/>" +
+			"<c:showSerName val=\"0\"/><c:showPercent val=\"1\"/>" +
+			"<c:showBubbleSize val=\"0\"/><c:showLeaderLines val=\"1\"/></c:dLbls>";
+		return xml.replace("</c:pieChart>", `${d}</c:pieChart>`);
+	}
+	const d = "<c:dLbls><c:numFmt formatCode=\"#,##0\" sourceLinked=\"0\"/>" +
+		"<c:showLegendKey val=\"0\"/><c:showVal val=\"1\"/><c:showCatName val=\"0\"/>" +
+		"<c:showSerName val=\"0\"/><c:showPercent val=\"0\"/><c:showBubbleSize val=\"0\"/></c:dLbls>";
+	return xml.replace(/<c:axId/, `${d}<c:axId`);
+}
+
 // ─── XML 헬퍼 ─────────────────────────────────────────────────────────────────
 
 const CHART_COL_S = 3, CHART_COL_E = 17, CHART_ROWS = 21;
@@ -280,6 +303,8 @@ async function convert(pageId: string, localCsvPath?: string): Promise<void> {
 		const buf = await xChart(def.type, def.label, def.entries);
 		let xml = await chartXmlFrom(buf);
 		xml = sanitize(xml);
+		xml = addTitle(xml, def.label);
+		xml = addDataLabels(xml);
 		if (def.post) xml = def.post(xml);
 		chartXmls.push(xml);
 		created.push(def.label);
