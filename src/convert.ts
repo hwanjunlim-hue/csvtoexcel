@@ -377,6 +377,7 @@ async function convert(pageId: string, localCsvPath?: string): Promise<void> {
 		page_id: pageId,
 		properties: {
 			"엑셀 파일": { files: [{ type: "file_upload", name: filename, file_upload: { id: upload.id } }] },
+			"상태": { status: { name: "Notion Page 생성" } },
 		},
 	});
 
