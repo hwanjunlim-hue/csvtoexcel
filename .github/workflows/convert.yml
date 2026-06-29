@@ -9,7 +9,7 @@ jobs:
   convert:
     runs-on: ubuntu-latest
     env:
-      NOTION_API_TOKEN: ${{ secrets.NOTION_API_TOKEN }}
+      NOTION_API_TOKEN: ${{ secrets.NOTION_TOKEN_CSVTOEXCEL }}
 
     steps:
       - uses: actions/checkout@v4
