@@ -1,6 +1,6 @@
 /**
  * 사용법:
- *   npx tsx src/convert.ts <Notion-페이지-ID>
+ *   npx tsx src/convert.ts <Notion-페이지-ID> [--csv <로컬파일경로>]
  *
  * 필요 환경변수 (.env 또는 shell):
  *   NOTION_API_TOKEN=ntn_xxxx
@@ -11,6 +11,8 @@
  *   3. 페이지의 '엑셀 파일' 속성에 업로드
  */
 
+import { readFile } from "fs/promises";
+import { existsSync } from "fs";
 import { createRequire } from "module";
 import ExcelJS from "exceljs";
 import iconv from "iconv-lite";
@@ -198,32 +200,38 @@ function writeTable(ws: ExcelJS.Worksheet, r: number, title: string, headers: st
 
 // ─── 메인 변환 함수 ───────────────────────────────────────────────────────────
 
-async function convert(pageId: string): Promise<void> {
+async function convert(pageId: string, localCsvPath?: string): Promise<void> {
 	const token = process.env.NOTION_API_TOKEN;
 	if (!token) throw new Error("NOTION_API_TOKEN이 설정되지 않았습니다. .env 파일을 확인하세요.");
 
 	const notion = new Client({ auth: token });
 
-	// ── 1. Notion 페이지에서 CSV 다운로드 ────────────────────────────────
+	// ── 1. Notion 페이지 조회 (제목 취득) ────────────────────────────────
 	console.log(`[1/5] Notion 페이지 조회: ${pageId}`);
 	const page = await notion.pages.retrieve({ page_id: pageId });
 	const props = (page as { properties: Record<string, unknown> }).properties;
 
-	const csvProp = props["CSV 파일"] as { type: string; files: Array<{ type: string; file?: { url: string }; external?: { url: string } }> } | undefined;
-	if (!csvProp?.files?.length) throw new Error("'CSV 파일' 속성에 첨부 파일이 없습니다.");
-
-	const f = csvProp.files[0];
-	const csvUrl = f.type === "file" ? f.file?.url : f.external?.url;
-	if (!csvUrl) throw new Error("CSV 파일 URL을 가져올 수 없습니다.");
-
 	const titleProp = Object.values(props).find((v: unknown) => (v as { type?: string }).type === "title") as { title: Array<{ plain_text: string }> } | undefined;
 	const pageTitle = titleProp?.title?.map((t) => t.plain_text).join("").trim() || "재무리포트";
-
 	console.log(`      페이지명: ${pageTitle}`);
-	console.log(`[2/5] CSV 다운로드 중...`);
-	const csvResp = await fetch(csvUrl);
-	if (!csvResp.ok) throw new Error(`CSV 다운로드 실패: ${csvResp.status}`);
-	const csvBuf = Buffer.from(await csvResp.arrayBuffer());
+
+	// ── 2. CSV 로딩 ──────────────────────────────────────────────────────
+	let csvBuf: Buffer;
+	if (localCsvPath) {
+		if (!existsSync(localCsvPath)) throw new Error(`파일을 찾을 수 없습니다: ${localCsvPath}`);
+		console.log(`[2/5] 로컬 CSV 로딩: ${localCsvPath}`);
+		csvBuf = await readFile(localCsvPath);
+	} else {
+		const csvProp = props["CSV 파일"] as { type: string; files: Array<{ type: string; file?: { url: string }; external?: { url: string } }> } | undefined;
+		if (!csvProp?.files?.length) throw new Error("'CSV 파일' 속성에 첨부 파일이 없습니다.");
+		const f = csvProp.files[0];
+		const csvUrl = f.type === "file" ? f.file?.url : f.external?.url;
+		if (!csvUrl) throw new Error("CSV 파일 URL을 가져올 수 없습니다.");
+		console.log(`[2/5] CSV 다운로드 중...`);
+		const csvResp = await fetch(csvUrl);
+		if (!csvResp.ok) throw new Error(`CSV 다운로드 실패: ${csvResp.status}`);
+		csvBuf = Buffer.from(await csvResp.arrayBuffer());
+	}
 	const rows = parseRows(csvBuf);
 	console.log(`      행 수: ${rows.length}건`);
 
@@ -354,15 +362,19 @@ async function convert(pageId: string): Promise<void> {
 
 // ─── CLI 진입점 ───────────────────────────────────────────────────────────────
 
-const [, , pageIdArg] = process.argv;
+const args = process.argv.slice(2);
+const pageIdArg = args[0];
+const csvFlagIdx = args.indexOf("--csv");
+const localCsvArg = csvFlagIdx !== -1 ? args[csvFlagIdx + 1] : undefined;
 
 if (!pageIdArg) {
-	console.error("사용법: npx tsx src/convert.ts <Notion-페이지-ID>");
+	console.error("사용법: npx tsx src/convert.ts <Notion-페이지-ID> [--csv <로컬파일경로>]");
 	console.error("예시:   npx tsx src/convert.ts abc123def456...");
+	console.error("        npx tsx src/convert.ts abc123def456... --csv ./sample.csv");
 	process.exit(1);
 }
 
-convert(pageIdArg).catch((err) => {
+convert(pageIdArg, localCsvArg).catch((err) => {
 	console.error("❌ 오류:", err.message);
 	process.exit(1);
 });
